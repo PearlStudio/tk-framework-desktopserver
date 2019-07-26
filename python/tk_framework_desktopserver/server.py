@@ -33,10 +33,13 @@ class Server(object):
     _DEFAULT_PORT = 9000
     _DEFAULT_KEYS_PATH = "../resources/keys"
 
+    _reactor_thread = None
+    _observer = None
+
     class Notifier(QtCore.QObject):
         different_user_requested = QtCore.Signal(str, int)
 
-    def __init__(self, keys_path, encrypt, host, user_id, host_aliases, port=None):
+    def __init__(self, keys_path, encrypt, host, user_id, host_aliases, is_wss, port=None):
         """
         Constructor.
 
@@ -53,6 +56,7 @@ class Server(object):
         self._keys_path = keys_path or self._DEFAULT_KEYS_PATH
         self._host = host
         self._user_id = user_id
+        self._is_wss = is_wss
 
         self._host_aliases = host_aliases
 
@@ -69,14 +73,8 @@ class Server(object):
         if not os.path.exists(keys_path):
             raise MissingCertificateError(keys_path)
 
-        twisted = get_logger("twisted")
-
         logger.debug("Browser integration using certificates at %s", self._keys_path)
         logger.debug("Encryption: %s", encrypt)
-
-        # This will take the Twisted logging and forward it to Python's logging.
-        self._observer = log.PythonLoggingObserver(twisted.name)
-        self._observer.start()
 
     def get_logger(self):
         """
@@ -101,19 +99,22 @@ class Server(object):
 
         :param debug: Boolean Show debug output. Will also Start local web server to test client pages.
         """
-        cert_crt_path, cert_key_path = certificates.get_certificate_file_names(self._keys_path)
+        if self._is_wss:
+            cert_crt_path, cert_key_path = certificates.get_certificate_file_names(self._keys_path)
+            self._raise_if_missing_certificate(cert_key_path)
+            self._raise_if_missing_certificate(cert_crt_path)
+            self.context_factory = ssl.DefaultOpenSSLContextFactory(
+                cert_key_path, cert_crt_path
+            )
+        else:
+            # SSL server context: load server key and certificate
+            self.context_factory = None
 
-        self._raise_if_missing_certificate(cert_key_path)
-        self._raise_if_missing_certificate(cert_crt_path)
-
-        # SSL server context: load server key and certificate
-        self.context_factory = ssl.DefaultOpenSSLContextFactory(cert_key_path,
-                                                                cert_crt_path)
 
         # FIXME: Seems like the debugging flags are gone from the initializer at the moment.
         # We should try to restore these.
         self.factory = WebSocketServerFactory(
-            "wss://localhost:%d" % self._port
+            "%s://localhost:%d" % ("wss" if self._is_wss else "ws", self._port)
         )
 
         self.factory.protocol = ServerProtocol
@@ -128,30 +129,43 @@ class Server(object):
         except error.CannotListenError, e:
             raise PortBusyError(str(e))
 
-    def _start_reactor(self):
+    @classmethod
+    def init_twisted_logging(cls):
+        twisted = get_logger("twisted")
+        # This will take the Twisted logging and forward it to Python's logging.
+        cls._observer = log.PythonLoggingObserver(twisted.name)
+        cls._observer.start()
+
+    @classmethod
+    def start_reactor(cls):
         """
         Starts the reactor in a Python thread.
         """
+        # Reactor thread has already been started, do not start again.
+        if cls._reactor_thread:
+            return
+
         def start():
             reactor.run(installSignalHandlers=0)
 
-        self._reactor_thread = threading.Thread(target=start)
-        self._reactor_thread.start()
+        cls._reactor_thread = threading.Thread(target=start)
+        cls._reactor_thread.start()
 
     def start(self):
         """
         Start shotgun web server, listening to websocket connections.
         """
         self._start_server()
-        self._start_reactor()
 
-    def is_running(self):
+    @classmethod
+    def is_running(cls):
         """
         :returns: True if the server is up and running, False otherwise.
         """
         return self._reactor_thread.isAlive()
 
-    def tear_down(self):
+    @classmethod
+    def tear_down_reactor(self):
         """
         Tears down Twisted.
         """

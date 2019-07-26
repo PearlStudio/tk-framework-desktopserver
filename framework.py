@@ -23,7 +23,7 @@ class DesktopserverFramework(sgtk.platform.Framework):
 
     def __init__(self, *args, **kwargs):
         super(DesktopserverFramework, self).__init__(*args, **kwargs)
-        self._server = None
+        self._servers = [None, None]
         self._settings = None
         self._tk_framework_desktopserver = None
 
@@ -52,8 +52,9 @@ class DesktopserverFramework(sgtk.platform.Framework):
         """
         # Lazy-init because engine is initialized after its frameworks, so QtCore is not initialized yet.
         from sgtk.platform.qt import QtCore
-        if self._server:
-            self._server.notifier.different_user_requested.connect(cb, type=QtCore.Qt.QueuedConnection)
+        for server in self._servers:
+            if server is not None:
+                server.notifier.different_user_requested.connect(cb, type=QtCore.Qt.QueuedConnection)
 
     ##########################################################################################
     # init and destroy
@@ -113,16 +114,33 @@ class DesktopserverFramework(sgtk.platform.Framework):
                 keys_path = self._settings.certificate_folder
                 encrypt = False
 
-            self._server = self._tk_framework_desktopserver.Server(
+            self._tk_framework_desktopserver.Server.init_twisted_logging()
+
+            self._servers[0] = self._tk_framework_desktopserver.Server(
                 keys_path=keys_path,
                 encrypt=encrypt,
                 host=host,
                 user_id=user_id,
                 host_aliases=self._get_host_aliases(host),
+                is_wss = True,
                 port=self._settings.port
             )
+            self._servers[0].start()
+            # If we're encrypting the communication,
+            # we need to dual listen on a wss and ws ports
+            if encrypt:
+                self._servers[1] = self._tk_framework_desktopserver.Server(
+                    keys_path=keys_path,
+                    encrypt=encrypt,
+                    host=host,
+                    user_id=user_id,
+                    host_aliases=self._get_host_aliases(host),
+                    is_wss = False,
+                    port=self._settings.port + 1
+                )
+                self._servers[1].start()
 
-            self._server.start()
+            self._tk_framework_desktopserver.Server.start_reactor()
         except Exception:
             self.logger.exception("Could not start the browser integration:")
 
@@ -214,8 +232,8 @@ class DesktopserverFramework(sgtk.platform.Framework):
 
         Closes the websocket server.
         """
-        if self._server and self._server.is_running():
-            self._server.tear_down()
+        if self._tk_framework_desktopserver.Server.is_running():
+            self._tk_framework_desktopserver.Server.tear_down_reactor()
 
     def __retrieve_certificates_from_shotgun(self):
         """
