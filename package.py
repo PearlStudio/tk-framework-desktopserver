@@ -2,7 +2,7 @@
 
 name = 'tk_framework_desktopserver'
 
-version = "1.3.10"
+version = "1.3.11"
 
 description = 'tk-framework-desktopserver'
 
